@@ -204,7 +204,68 @@
         makeDraggable(popup);
     }
     
-    function generatePDFContent(forPrint = false) {
+    // Nova função para gerar o conteúdo do PDF, CSV, etc.
+    function getReportData() {
+        const reportData = {
+            'dias90': [],
+            'dias50': [],
+            'aguardando': [],
+            'semRetorno': [],
+            'tenhoResposta': []
+        };
+        const defaultColumnId = 'aguardando';
+
+        // Mapeia o estado salvo para uma busca mais rápida
+        const savedCardsByPlaca = {};
+        for (const columnId in savedState) {
+            if (savedState.hasOwnProperty(columnId)) {
+                savedState[columnId].forEach(card => {
+                    savedCardsByPlaca[card.placa] = { ...card, columnId };
+                });
+            }
+        }
+
+        allCardsData.forEach(item => {
+            const placa = item.PLACA;
+            const dias = parseInt(item['DIAS EM REPARO']);
+
+            if (savedCardsByPlaca[placa]) {
+                const savedCard = savedCardsByPlaca[placa];
+                reportData[savedCard.columnId].push({
+                    placa,
+                    dias,
+                    empresa: item['EMPRESA RESP'],
+                    status: item.STATUS || 'N/A',
+                    obs: savedCard.obs
+                });
+            } else {
+                let targetColumnId = defaultColumnId;
+                if (dias >= 90) {
+                    targetColumnId = 'dias90';
+                } else if (dias >= 50) {
+                    targetColumnId = 'dias50';
+                }
+                reportData[targetColumnId].push({
+                    placa,
+                    dias,
+                    empresa: item['EMPRESA RESP'],
+                    status: item.STATUS || 'N/A',
+                    obs: ''
+                });
+            }
+        });
+
+        // Ordena os cartões por dias em cada coluna
+        for (const columnId in reportData) {
+            if (reportData.hasOwnProperty(columnId)) {
+                reportData[columnId].sort((a, b) => b.dias - a.dias);
+            }
+        }
+
+        return reportData;
+    }
+
+    function generatePDF() {
         const { jsPDF } = window.jspdf;
         const doc = new jsPDF();
         let yOffsetLeft = 30;
@@ -236,7 +297,7 @@
             doc.text(`Página ${pageNumber}`, pageWidth - 25, 13);
             doc.setTextColor(0, 0, 0);
         };
-        
+
         const statusMap = {
             'dias90': '90 Dias',
             'dias50': '50 Dias',
@@ -245,9 +306,11 @@
             'tenhoResposta': 'Tenho Resposta'
         };
 
+        const reportData = getReportData();
+
         let firstCategory = true;
         for (const [columnId, statusName] of Object.entries(statusMap)) {
-            const cardsInColumn = savedState[columnId] || [];
+            const cardsInColumn = reportData[columnId] || [];
             if (cardsInColumn.length === 0) continue;
 
             if (firstCategory) {
@@ -269,62 +332,49 @@
             yOffsetLeft = yOffsetRight = yTitle + 8;
             doc.setFont(undefined, 'normal');
 
-            const sortedCards = cardsInColumn.sort((a, b) => {
-                const originalA = allCardsData.find(item => item.PLACA === a.placa);
-                const originalB = allCardsData.find(item => item.PLACA === b.placa);
-                return (originalB ? parseInt(originalB['DIAS EM REPARO']) : 0) - (originalA ? parseInt(originalA['DIAS EM REPARO']) : 0);
-            });
+            cardsInColumn.forEach(card => {
+                const obs = card.obs.trim();
+                let text = `Placa: ${card.placa} | Dias: ${card.dias}`;
+                if (obs) {
+                    text += ` | Anotações: ${obs}`;
+                }
+                
+                const splitText = doc.splitTextToSize(text, 90);
+                const textHeight = doc.getLineHeight() * splitText.length;
 
-            sortedCards.forEach(card => {
-                const originalCardData = allCardsData.find(item => item.PLACA === card.placa);
-                if (originalCardData) {
-                    const obs = card.obs.trim();
-                    let text = `Placa: ${card.placa} | Dias: ${originalCardData['DIAS EM REPARO']}`;
-                    if (obs) {
-                        text += ` | Anotações: ${obs}`;
-                    }
-                    
-                    const splitText = doc.splitTextToSize(text, 90);
-                    const textHeight = doc.getLineHeight() * splitText.length;
+                let currentX, currentY, yOffsetToUpdate;
+                
+                if (yOffsetLeft <= yOffsetRight) {
+                    currentX = columnXLeft;
+                    currentY = yOffsetLeft;
+                    yOffsetToUpdate = 'yOffsetLeft';
+                } else {
+                    currentX = columnXRight;
+                    currentY = yOffsetRight;
+                    yOffsetToUpdate = 'yOffsetRight';
+                }
+                
+                if (currentY + textHeight > pageHeight - 20) {
+                    doc.addPage();
+                    pageNumber++;
+                    addCategoryHeader(statusName);
+                    yOffsetLeft = yOffsetRight = 30;
+                    currentX = columnXLeft;
+                    currentY = yOffsetLeft;
+                    yOffsetToUpdate = 'yOffsetLeft';
+                }
 
-                    let currentX, currentY, yOffsetToUpdate;
-                    
-                    if (yOffsetLeft <= yOffsetRight) {
-                        currentX = columnXLeft;
-                        currentY = yOffsetLeft;
-                        yOffsetToUpdate = 'yOffsetLeft';
-                    } else {
-                        currentX = columnXRight;
-                        currentY = yOffsetRight;
-                        yOffsetToUpdate = 'yOffsetRight';
-                    }
-                    
-                    if (currentY + textHeight > pageHeight - 20) {
-                        doc.addPage();
-                        pageNumber++;
-                        addCategoryHeader(statusName);
-                        yOffsetLeft = yOffsetRight = 30;
-                        currentX = columnXLeft;
-                        currentY = yOffsetLeft;
-                        yOffsetToUpdate = 'yOffsetLeft';
-                    }
+                doc.setFontSize(10);
+                doc.text(splitText, currentX, currentY);
 
-                    doc.setFontSize(10);
-                    doc.text(splitText, currentX, currentY);
-
-                    if (yOffsetToUpdate === 'yOffsetLeft') {
-                        yOffsetLeft += textHeight + 5;
-                    } else {
-                        yOffsetRight += textHeight + 5;
-                    }
+                if (yOffsetToUpdate === 'yOffsetLeft') {
+                    yOffsetLeft += textHeight + 5;
+                } else {
+                    yOffsetRight += textHeight + 5;
                 }
             });
         }
-        return doc;
-    }
-
-    function generatePDF() {
-        const doc = generatePDFContent();
+        
         doc.save("relatorio_kanban.pdf");
         document.getElementById('report-popup').remove();
     }
@@ -351,25 +401,17 @@
             'tenhoResposta': 'Tenho Resposta'
         };
 
+        const reportData = getReportData();
+        
         let csvContent = "Status;Placa;Dias em Reparo;Empresa Responsável;Anotações\n";
 
         for (const [columnId, statusName] of Object.entries(statusMap)) {
-            const cardsInColumn = savedState[columnId] || [];
+            const cardsInColumn = reportData[columnId] || [];
             if (cardsInColumn.length === 0) continue;
 
             cardsInColumn.forEach(card => {
-                const originalCardData = allCardsData.find(item => item.PLACA === card.placa);
-                if (originalCardData) {
-                    const placa = card.placa;
-                    const dias = originalCardData['DIAS EM REPARO'] || '';
-                    const empresa = originalCardData['EMPRESA RESP'] || '';
-                    const obs = card.obs || '';
-
-                    // Trata vírgulas e aspas duplas nas anotações
-                    const sanitizedObs = `"${obs.replace(/"/g, '""')}"`;
-                    
-                    csvContent += `${statusName};${placa};${dias};${empresa};${sanitizedObs}\n`;
-                }
+                const sanitizedObs = `"${card.obs.replace(/"/g, '""')}"`;
+                csvContent += `${statusName};${card.placa};${card.dias};${card.empresa};${sanitizedObs}\n`;
             });
         }
 
